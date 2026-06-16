@@ -5,6 +5,7 @@ import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 
 @dataclass
@@ -29,6 +30,10 @@ class Leg:
 
         signed = unit_payoff if self.side == "long" else -unit_payoff
         return signed * self.quantity * self.multiplier
+
+    def csv_column(self) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", self.label.strip().lower()).strip("_")
+        return f"leg_{normalized or 'unnamed'}_payoff"
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,10 +192,24 @@ def print_report(legs: list[Leg], rows: list[dict[str, float]], summary: dict[st
         print(f"{row['underlying_price']:>11.2f} {row['net_payoff']:>12.2f}")
 
 
+def build_rows(legs: list[Leg], prices: list[float]) -> list[dict[str, float]]:
+    rows: list[dict[str, float]] = []
+    for price in prices:
+        row: dict[str, float] = {"underlying_price": price}
+        total = 0.0
+        for leg in legs:
+            leg_payoff = round(leg.payoff(price), 2)
+            row[leg.csv_column()] = leg_payoff
+            total += leg_payoff
+        row["net_payoff"] = round(total, 2)
+        rows.append(row)
+    return rows
+
+
 def write_grid(path: Path, rows: list[dict[str, float]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["underlying_price", "net_payoff"])
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
 
@@ -199,7 +218,7 @@ def main() -> None:
     args = parse_args()
     legs = load_legs(args.input)
     prices = build_price_grid(args.price_start, args.price_end, args.price_step)
-    rows = [{"underlying_price": price, "net_payoff": round(sum(leg.payoff(price) for leg in legs), 2)} for price in prices]
+    rows = build_rows(legs, prices)
     summary = summarize_grid(rows, args.price_start, args.price_end)
     print_report(legs, rows, summary)
 

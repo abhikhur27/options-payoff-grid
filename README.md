@@ -45,6 +45,8 @@ python options_payoff_grid.py ^
   --summary-json reports/payoff_summary.json
 ```
 
+The exported CSV now includes each leg's individual payoff contribution alongside the net payoff, which makes it easier to explain where a spread's shape is actually coming from.
+
 ## Output
 
 The CLI prints:
@@ -52,7 +54,7 @@ The CLI prints:
 - sampled max profit / max loss across the chosen range
 - approximate breakevens when the payoff crosses zero
 - leg breakdown
-- one row per sampled underlying price
+- one row per sampled underlying price, including per-leg payoff columns in CSV exports
 
 ## Verification
 
