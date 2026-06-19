@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--price-step", type=float, default=5.0, help="Price step between rows.")
     parser.add_argument("--output", type=Path, help="Optional CSV path for the payoff grid.")
     parser.add_argument("--summary-json", type=Path, help="Optional JSON path for the scenario summary.")
+    parser.add_argument("--markdown-report", type=Path, help="Optional Markdown path for a trade-note style summary.")
     return parser.parse_args()
 
 
@@ -121,6 +122,52 @@ def build_price_grid(start: float, end: float, step: float) -> list[float]:
     return prices
 
 
+def interpolate_zero_crossing(left_price: float, left_payoff: float, right_price: float, right_payoff: float) -> float:
+    if right_price == left_price or left_payoff == right_payoff:
+        return round(left_price, 2)
+    ratio = abs(left_payoff) / (abs(left_payoff) + abs(right_payoff))
+    return round(left_price + ((right_price - left_price) * ratio), 2)
+
+
+def build_profit_zones(rows: list[dict[str, float]], start: float, end: float) -> list[dict[str, float]]:
+    profit_zones: list[dict[str, float]] = []
+    zone_start: float | None = start if rows and rows[0]["net_payoff"] > 0 else None
+
+    for previous, current in zip(rows, rows[1:]):
+        prev_payoff = previous["net_payoff"]
+        curr_payoff = current["net_payoff"]
+        if prev_payoff == curr_payoff:
+            continue
+
+        if prev_payoff <= 0 < curr_payoff:
+            zone_start = interpolate_zero_crossing(
+                previous["underlying_price"],
+                prev_payoff,
+                current["underlying_price"],
+                curr_payoff,
+            )
+        elif prev_payoff > 0 >= curr_payoff and zone_start is not None:
+            zone_end = interpolate_zero_crossing(
+                previous["underlying_price"],
+                prev_payoff,
+                current["underlying_price"],
+                curr_payoff,
+            )
+            profit_zones.append({"start": round(zone_start, 2), "end": round(zone_end, 2)})
+            zone_start = None
+
+    if zone_start is not None:
+        profit_zones.append({"start": round(zone_start, 2), "end": round(end, 2)})
+
+    return profit_zones
+
+
+def format_profit_zones(profit_zones: list[dict[str, float]]) -> str:
+    if not profit_zones:
+        return "none inside sampled range"
+    return ", ".join(f"${zone['start']:.2f} to ${zone['end']:.2f}" for zone in profit_zones)
+
+
 def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> dict[str, object]:
     profits = [row["net_payoff"] for row in rows]
     max_profit = max(profits)
@@ -154,6 +201,8 @@ def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> di
     else:
         loss_label = f"sampled min at {max_loss_price:.2f}"
 
+    profit_zones = build_profit_zones(rows, start, end)
+
     return {
         "sampled_price_start": start,
         "sampled_price_end": end,
@@ -163,6 +212,7 @@ def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> di
         "max_loss": round(max_loss, 2),
         "max_loss_note": loss_label,
         "breakevens": breakevens,
+        "profit_zones": profit_zones,
     }
 
 
@@ -175,6 +225,7 @@ def print_report(legs: list[Leg], rows: list[dict[str, float]], summary: dict[st
     print(f"Sampled max loss:        ${summary['max_loss']:.2f} ({summary['max_loss_note']})")
     breakevens = summary["breakevens"]
     print(f"Approx breakevens:       {', '.join(f'${value:.2f}' for value in breakevens) if breakevens else 'none inside sampled range'}")
+    print(f"Profit zones:            {format_profit_zones(summary['profit_zones'])}")
     print()
 
     print("Leg breakdown:")
@@ -214,6 +265,28 @@ def write_grid(path: Path, rows: list[dict[str, float]]) -> None:
         writer.writerows(rows)
 
 
+def write_markdown_report(path: Path, legs: list[Leg], summary: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Options Payoff Brief",
+        "",
+        f"- Sampled range: `${summary['sampled_price_start']:.2f}` to `${summary['sampled_price_end']:.2f}`",
+        f"- Sampled max profit: `${summary['max_profit']:.2f}` ({summary['max_profit_note']})",
+        f"- Sampled max loss: `${summary['max_loss']:.2f}` ({summary['max_loss_note']})",
+        f"- Approx breakevens: {', '.join(f'${value:.2f}' for value in summary['breakevens']) if summary['breakevens'] else 'none inside sampled range'}",
+        f"- Profit zones: {format_profit_zones(summary['profit_zones'])}",
+        "",
+        "## Legs",
+    ]
+    for leg in legs:
+        strike_text = "-" if leg.kind == "stock" else f"{float(leg.strike or 0.0):.2f}"
+        lines.append(
+            f"- `{leg.label}` | {leg.side} {leg.kind} | strike `{strike_text}` | premium `{leg.premium:.2f}` | qty `{leg.quantity:.2f}` | multiplier `{leg.multiplier:.0f}`"
+        )
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     args = parse_args()
     legs = load_legs(args.input)
@@ -234,6 +307,10 @@ def main() -> None:
         }
         args.summary_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"Wrote summary JSON: {args.summary_json}")
+
+    if args.markdown_report:
+        write_markdown_report(args.markdown_report, legs, summary)
+        print(f"Wrote Markdown report: {args.markdown_report}")
 
 
 if __name__ == "__main__":

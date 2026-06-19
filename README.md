@@ -47,12 +47,24 @@ python options_payoff_grid.py ^
 
 The exported CSV now includes each leg's individual payoff contribution alongside the net payoff, which makes it easier to explain where a spread's shape is actually coming from.
 
+Write a Markdown trade-note brief with breakevens and profit zones:
+
+```bash
+python options_payoff_grid.py ^
+  --input sample_legs.csv ^
+  --price-start 70 ^
+  --price-end 140 ^
+  --price-step 5 ^
+  --markdown-report reports/payoff_brief.md
+```
+
 ## Output
 
 The CLI prints:
 
 - sampled max profit / max loss across the chosen range
 - approximate breakevens when the payoff crosses zero
+- profitable price zones inside the sampled range
 - leg breakdown
 - one row per sampled underlying price, including per-leg payoff columns in CSV exports
 
@@ -61,6 +73,7 @@ The CLI prints:
 ```bash
 python -m py_compile options_payoff_grid.py
 python options_payoff_grid.py --input sample_legs.csv --price-start 70 --price-end 140 --price-step 10
+python options_payoff_grid.py --input sample_legs.csv --price-start 70 --price-end 140 --price-step 10 --markdown-report reports/sample.md
 ```
 
 ## Portfolio Positioning
