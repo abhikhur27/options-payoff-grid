@@ -58,6 +58,17 @@ python options_payoff_grid.py ^
   --markdown-report reports/payoff_brief.md
 ```
 
+Highlight where the structure currently sits:
+
+```bash
+python options_payoff_grid.py ^
+  --input sample_legs.csv ^
+  --price-start 70 ^
+  --price-end 140 ^
+  --price-step 5 ^
+  --spot-price 101.5
+```
+
 ## Output
 
 The CLI prints:
@@ -65,6 +76,7 @@ The CLI prints:
 - sampled max profit / max loss across the chosen range
 - approximate breakevens when the payoff crosses zero
 - profitable price zones inside the sampled range
+- optional current-price spot check against the sampled grid
 - leg breakdown
 - one row per sampled underlying price, including per-leg payoff columns in CSV exports
 

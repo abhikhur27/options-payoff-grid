@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, help="Optional CSV path for the payoff grid.")
     parser.add_argument("--summary-json", type=Path, help="Optional JSON path for the scenario summary.")
     parser.add_argument("--markdown-report", type=Path, help="Optional Markdown path for a trade-note style summary.")
+    parser.add_argument(
+        "--spot-price",
+        type=float,
+        help="Optional current underlying price to highlight against the sampled expiry grid.",
+    )
     return parser.parse_args()
 
 
@@ -168,6 +173,27 @@ def format_profit_zones(profit_zones: list[dict[str, float]]) -> str:
     return ", ".join(f"${zone['start']:.2f} to ${zone['end']:.2f}" for zone in profit_zones)
 
 
+def describe_spot_position(spot_price: float, rows: list[dict[str, float]], summary: dict[str, object]) -> dict[str, float | str | bool]:
+    nearest = min(rows, key=lambda row: abs(row["underlying_price"] - spot_price))
+    profit_zone_hit = any(
+        zone["start"] - 1e-9 <= spot_price <= zone["end"] + 1e-9 for zone in summary["profit_zones"]
+    )
+    breakevens = [float(value) for value in summary["breakevens"]]
+    nearest_breakeven = min((abs(spot_price - breakeven) for breakeven in breakevens), default=None)
+    direction = "inside sampled profit zone" if profit_zone_hit else "outside sampled profit zone"
+    if nearest_breakeven is not None and nearest_breakeven < 0.01:
+        direction = "near sampled breakeven"
+
+    return {
+        "spot_price": round(spot_price, 2),
+        "nearest_sampled_price": round(float(nearest["underlying_price"]), 2),
+        "nearest_sampled_payoff": round(float(nearest["net_payoff"]), 2),
+        "profit_zone_hit": profit_zone_hit,
+        "distance_to_nearest_breakeven": None if nearest_breakeven is None else round(nearest_breakeven, 2),
+        "status": direction,
+    }
+
+
 def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> dict[str, object]:
     profits = [row["net_payoff"] for row in rows]
     max_profit = max(profits)
@@ -216,7 +242,12 @@ def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> di
     }
 
 
-def print_report(legs: list[Leg], rows: list[dict[str, float]], summary: dict[str, object]) -> None:
+def print_report(
+    legs: list[Leg],
+    rows: list[dict[str, float]],
+    summary: dict[str, object],
+    spot_summary: dict[str, float | str | bool] | None,
+) -> None:
     print("Options Payoff Grid")
     print("===================")
     print(f"Legs loaded:             {len(legs)}")
@@ -226,6 +257,17 @@ def print_report(legs: list[Leg], rows: list[dict[str, float]], summary: dict[st
     breakevens = summary["breakevens"]
     print(f"Approx breakevens:       {', '.join(f'${value:.2f}' for value in breakevens) if breakevens else 'none inside sampled range'}")
     print(f"Profit zones:            {format_profit_zones(summary['profit_zones'])}")
+    if spot_summary:
+        distance_text = (
+            "n/a"
+            if spot_summary["distance_to_nearest_breakeven"] is None
+            else f"${float(spot_summary['distance_to_nearest_breakeven']):.2f}"
+        )
+        print(
+            f"Spot check:              ${float(spot_summary['spot_price']):.2f} -> "
+            f"${float(spot_summary['nearest_sampled_payoff']):.2f} at sampled expiry "
+            f"({spot_summary['status']}, nearest breakeven delta {distance_text})"
+        )
     print()
 
     print("Leg breakdown:")
@@ -265,7 +307,12 @@ def write_grid(path: Path, rows: list[dict[str, float]]) -> None:
         writer.writerows(rows)
 
 
-def write_markdown_report(path: Path, legs: list[Leg], summary: dict[str, object]) -> None:
+def write_markdown_report(
+    path: Path,
+    legs: list[Leg],
+    summary: dict[str, object],
+    spot_summary: dict[str, float | str | bool] | None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# Options Payoff Brief",
@@ -278,6 +325,17 @@ def write_markdown_report(path: Path, legs: list[Leg], summary: dict[str, object
         "",
         "## Legs",
     ]
+    if spot_summary:
+        distance_text = (
+            "n/a"
+            if spot_summary["distance_to_nearest_breakeven"] is None
+            else f"${float(spot_summary['distance_to_nearest_breakeven']):.2f}"
+        )
+        lines[6:6] = [
+            f"- Spot check: `${float(spot_summary['spot_price']):.2f}` with nearest sampled payoff `${float(spot_summary['nearest_sampled_payoff']):.2f}`",
+            f"- Spot status: {spot_summary['status']}",
+            f"- Distance to nearest sampled breakeven: {distance_text}",
+        ]
     for leg in legs:
         strike_text = "-" if leg.kind == "stock" else f"{float(leg.strike or 0.0):.2f}"
         lines.append(
@@ -293,7 +351,8 @@ def main() -> None:
     prices = build_price_grid(args.price_start, args.price_end, args.price_step)
     rows = build_rows(legs, prices)
     summary = summarize_grid(rows, args.price_start, args.price_end)
-    print_report(legs, rows, summary)
+    spot_summary = describe_spot_position(args.spot_price, rows, summary) if args.spot_price is not None else None
+    print_report(legs, rows, summary, spot_summary)
 
     if args.output:
         write_grid(args.output, rows)
@@ -305,11 +364,13 @@ def main() -> None:
             "legs": [leg.__dict__ for leg in legs],
             "summary": summary,
         }
+        if spot_summary:
+            payload["spot_summary"] = spot_summary
         args.summary_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"Wrote summary JSON: {args.summary_json}")
 
     if args.markdown_report:
-        write_markdown_report(args.markdown_report, legs, summary)
+        write_markdown_report(args.markdown_report, legs, summary, spot_summary)
         print(f"Wrote Markdown report: {args.markdown_report}")
 
 
