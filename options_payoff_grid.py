@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-json", type=Path, help="Optional JSON path for the scenario summary.")
     parser.add_argument("--markdown-report", type=Path, help="Optional Markdown path for a trade-note style summary.")
     parser.add_argument(
+        "--target-payoff",
+        type=float,
+        help="Optional payoff threshold to highlight where the structure meets or exceeds a goal.",
+    )
+    parser.add_argument(
         "--spot-price",
         type=float,
         help="Optional current underlying price to highlight against the sampled expiry grid.",
@@ -173,6 +178,44 @@ def format_profit_zones(profit_zones: list[dict[str, float]]) -> str:
     return ", ".join(f"${zone['start']:.2f} to ${zone['end']:.2f}" for zone in profit_zones)
 
 
+def build_target_payoff_zones(
+    rows: list[dict[str, float]],
+    start: float,
+    end: float,
+    target_payoff: float,
+) -> list[dict[str, float]]:
+    zones: list[dict[str, float]] = []
+    zone_start: float | None = start if rows and rows[0]["net_payoff"] >= target_payoff else None
+
+    for previous, current in zip(rows, rows[1:]):
+        prev_margin = previous["net_payoff"] - target_payoff
+        curr_margin = current["net_payoff"] - target_payoff
+        if prev_margin == curr_margin:
+            continue
+
+        if prev_margin < 0 <= curr_margin:
+            zone_start = interpolate_zero_crossing(
+                previous["underlying_price"],
+                prev_margin,
+                current["underlying_price"],
+                curr_margin,
+            )
+        elif prev_margin >= 0 > curr_margin and zone_start is not None:
+            zone_end = interpolate_zero_crossing(
+                previous["underlying_price"],
+                prev_margin,
+                current["underlying_price"],
+                curr_margin,
+            )
+            zones.append({"start": round(zone_start, 2), "end": round(zone_end, 2)})
+            zone_start = None
+
+    if zone_start is not None:
+        zones.append({"start": round(zone_start, 2), "end": round(end, 2)})
+
+    return zones
+
+
 def describe_spot_position(spot_price: float, rows: list[dict[str, float]], summary: dict[str, object]) -> dict[str, float | str | bool]:
     nearest = min(rows, key=lambda row: abs(row["underlying_price"] - spot_price))
     profit_zone_hit = any(
@@ -194,7 +237,12 @@ def describe_spot_position(spot_price: float, rows: list[dict[str, float]], summ
     }
 
 
-def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> dict[str, object]:
+def summarize_grid(
+    rows: list[dict[str, float]],
+    start: float,
+    end: float,
+    target_payoff: float | None = None,
+) -> dict[str, object]:
     profits = [row["net_payoff"] for row in rows]
     max_profit = max(profits)
     max_loss = min(profits)
@@ -229,7 +277,7 @@ def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> di
 
     profit_zones = build_profit_zones(rows, start, end)
 
-    return {
+    summary = {
         "sampled_price_start": start,
         "sampled_price_end": end,
         "row_count": len(rows),
@@ -240,6 +288,10 @@ def summarize_grid(rows: list[dict[str, float]], start: float, end: float) -> di
         "breakevens": breakevens,
         "profit_zones": profit_zones,
     }
+    if target_payoff is not None:
+        summary["target_payoff"] = round(target_payoff, 2)
+        summary["target_payoff_zones"] = build_target_payoff_zones(rows, start, end, target_payoff)
+    return summary
 
 
 def print_report(
@@ -257,6 +309,11 @@ def print_report(
     breakevens = summary["breakevens"]
     print(f"Approx breakevens:       {', '.join(f'${value:.2f}' for value in breakevens) if breakevens else 'none inside sampled range'}")
     print(f"Profit zones:            {format_profit_zones(summary['profit_zones'])}")
+    if "target_payoff" in summary:
+        print(
+            f"Target payoff zones:     {format_profit_zones(summary['target_payoff_zones'])} "
+            f"for >= ${float(summary['target_payoff']):.2f}"
+        )
     if spot_summary:
         distance_text = (
             "n/a"
@@ -325,6 +382,11 @@ def write_markdown_report(
         "",
         "## Legs",
     ]
+    if "target_payoff" in summary:
+        lines[6:6] = [
+            f"- Target payoff zones: {format_profit_zones(summary['target_payoff_zones'])}",
+            f"- Target payoff threshold: `${float(summary['target_payoff']):.2f}`",
+        ]
     if spot_summary:
         distance_text = (
             "n/a"
@@ -350,7 +412,7 @@ def main() -> None:
     legs = load_legs(args.input)
     prices = build_price_grid(args.price_start, args.price_end, args.price_step)
     rows = build_rows(legs, prices)
-    summary = summarize_grid(rows, args.price_start, args.price_end)
+    summary = summarize_grid(rows, args.price_start, args.price_end, args.target_payoff)
     spot_summary = describe_spot_position(args.spot_price, rows, summary) if args.spot_price is not None else None
     print_report(legs, rows, summary, spot_summary)
 
